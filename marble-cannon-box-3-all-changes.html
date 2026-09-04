@@ -1011,6 +1011,7 @@ const Entities = {
         // Locked voxels are true blockers: shots have no effect until the
         // matching key box is filled and its key unlocks the group.
         v.hitFlash = 1;
+        Locks.shake[v.lockGroup] = 1; // rattle the group's lock icon
         lockBlocked++;
       } else if (v.iced) {
         // Frozen voxels are true blockers: cannon shots cannot reach the piece
@@ -1271,8 +1272,12 @@ const IceBlocker = {
 const Locks = {
   queue: [],    // groups not yet unlocked, opened in this order
   flights: [],  // {t, dur, sx, sy, group}
+  anims: [],    // unlock pops: {group, x, y, t}
+  shake: {},    // group -> shake intensity, bumped when a locked voxel is hit
   reset() {
     this.flights.length = 0;
+    this.anims.length = 0;
+    this.shake = {};
     this.queue = ['eyeL', 'eyeR', 'mouth']
       .filter(g => Entities.voxels.some(v => v.lockGroup === g && v.locked));
   },
@@ -1284,13 +1289,13 @@ const Locks = {
     SFX.whip();
   },
   groupCenter(group) {
-    let n = 0, x = 0, y = 0;
+    let n = 0, x = 0, y = 0, depth = 0;
     for (const v of Entities.voxels) {
       if (v.lockGroup !== group || !v.alive) continue;
       const p = Object3D.center(v);
-      x += p.x; y += p.y; n++;
+      x += p.x; y += p.y; depth += p.depth; n++;
     }
-    return n ? { x: x / n, y: y / n } : { x: 0, y: Object3D.pivotY };
+    return n ? { x: x / n, y: y / n, depth: depth / n } : { x: 0, y: Object3D.pivotY, depth: 0 };
   },
   // key position along its arc; group center is re-read every frame so the
   // key homes in even while the object is being rotated
@@ -1300,10 +1305,17 @@ const Locks = {
     return { x: f.sx + (c.x - f.sx) * k, y: f.sy + (c.y - f.sy) * k + Math.sin(Math.PI * k) * 0.9, k };
   },
   update(dt) {
+    for (const g of Object.keys(this.shake))
+      this.shake[g] = Math.max(0, this.shake[g] - dt * 2.6);
+    for (let i = this.anims.length - 1; i >= 0; i--) {
+      this.anims[i].t += dt;
+      if (this.anims[i].t >= 0.75) this.anims.splice(i, 1);
+    }
     for (let i = this.flights.length - 1; i >= 0; i--) {
       const f = this.flights[i];
       f.t += dt;
       if (f.t >= f.dur) {
+        const c = this.groupCenter(f.group);
         for (const v of Entities.voxels) {
           if (v.lockGroup === f.group && v.locked) {
             v.locked = false;
@@ -1312,10 +1324,13 @@ const Locks = {
             Particles.dust(p.x, p.y);
           }
         }
-        const c = this.groupCenter(f.group);
-        Particles.ring(c.x, c.y, '#ffd34d', 0.6);
+        // pronounced unlock feedback: lock pops open, burst + confetti + kick
+        this.anims.push({ group: f.group, x: c.x, y: c.y, t: 0 });
+        Particles.ring(c.x, c.y, '#ffd34d', 0.85);
+        Particles.confetti(c.x, c.y);
+        Cam.addTrauma(0.14);
         SFX.melt();
-        Haptics.buzz(20);
+        Haptics.buzz([15, 25, 15]);
         this.flights.splice(i, 1);
       }
     }
@@ -2171,25 +2186,19 @@ const Render = {
     const occupied=[], badges=[];
     for(const v of Entities.voxels.filter(v=>v.alive&&!v.dying).sort((a,b)=>Object3D.center(b).depth-Object3D.center(a).depth)) {
       const p=Object3D.center(v), x=Cam.wx(p.x), y=Cam.wy(p.y);
-      if((v.hp>1||v.locked)
+      if(v.hp>1
         && !occupied.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.11)
         && !badges.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.22))
-        badges.push({x,y,hp:v.hp,locked:v.locked});
+        badges.push({x,y,hp:v.hp});
       occupied.push({x,y});
       v.hitFlash*=.86;
       v.iceFlash*=.84;
     }
     for(const b of badges) {
       ctx.fillStyle='rgba(255,255,255,.9)';ctx.beginPath();ctx.arc(b.x,b.y,Cam.S*.105,0,Math.PI*2);ctx.fill();
-      ctx.textAlign='center';ctx.textBaseline='middle';
-      if(b.locked) {
-        ctx.font=`${Cam.S*.125}px sans-serif`;
-        ctx.fillText('🔒',b.x,b.y+Cam.S*.008);
-      } else {
-        ctx.fillStyle='#c2246c';
-        ctx.font=`700 ${Cam.S*.15}px Fredoka,sans-serif`;
-        ctx.fillText(b.hp,b.x,b.y);
-      }
+      ctx.fillStyle='#c2246c';
+      ctx.font=`700 ${Cam.S*.15}px Fredoka,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(b.hp,b.x,b.y);
     }
   },
 
@@ -2430,6 +2439,49 @@ const Render = {
         }
         ctx.restore();
       }
+    }
+  },
+
+  // One prominent padlock per locked group, centered on the group and
+  // tracking it through rotation. Rattles when shots bounce off; pops open
+  // with a rising, fading 🔓 when its key arrives.
+  drawGroupLocks() {
+    const S = Cam.S;
+    for (const g of ['eyeL', 'eyeR', 'mouth']) {
+      if (!Entities.voxels.some(v => v.lockGroup === g && v.locked && v.alive)) continue;
+      const c = Locks.groupCenter(g);
+      const shake = Locks.shake[g] || 0;
+      const x = Cam.wx(c.x) + Math.sin(Cam.time * 46) * shake * S * 0.05;
+      const y = Cam.wy(c.y);
+      const pulse = 1 + 0.045 * Math.sin(Cam.time * 2.6) + shake * 0.18;
+      const alpha = c.depth < 0 ? 0.35 : 0.95; // fade when the group faces away
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = 'rgba(60,55,80,.35)';
+      ctx.lineWidth = Math.max(1, S * 0.018);
+      ctx.beginPath();
+      ctx.arc(x, y, S * 0.20 * pulse, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      ctx.font = `${S * 0.26 * pulse}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('🔒', x, y + S * 0.012);
+      ctx.restore();
+    }
+    for (const a of Locks.anims) {
+      const k = Math.min(1, a.t / 0.75);
+      const x = Cam.wx(a.x), y = Cam.wy(a.y + Ease.outQuad(k) * 0.7);
+      const s = 1 + 0.9 * Ease.outBack(Math.min(1, k * 1.6));
+      ctx.save();
+      ctx.globalAlpha = 1 - k * k;
+      ctx.translate(x, y);
+      ctx.rotate(0.25 * Math.sin(k * Math.PI * 3));
+      ctx.font = `${S * 0.30 * s}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(255,210,80,.9)';
+      ctx.shadowBlur = 16;
+      ctx.fillText('🔓', 0, 0);
+      ctx.restore();
     }
   },
 
@@ -2705,6 +2757,7 @@ const Render = {
     }
     this.drawBoxes();
     this.drawIceBlocker();
+    this.drawGroupLocks();
     this.drawKeys();
     // jumping marbles pass in front of boxes
     for (const m of Entities.marbles) if (m.state === 'jumping') this.drawMarble(m);
