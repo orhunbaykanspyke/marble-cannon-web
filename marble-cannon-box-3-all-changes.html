@@ -727,8 +727,10 @@ const Level = {
   // Every builder returns { cells:[{gx,gy,z,color,hp?}], counts:{color:n} }.
 
   // Level 2: smiley face — yellow head, brown eyes + nose, red smile. The eyes
-  // and mouth are armored blockers (hp 3 / hp 2): the cube shows its remaining
-  // hit count and each cannonball tick decrements it.
+  // and mouth are LOCKED blocker groups: shots bounce off with no effect until
+  // the matching key box below is filled, which flies a key up and unlocks the
+  // group (see Locks). Both depth layers are locked so the model can't be
+  // opened from behind by rotating it.
   // Per-layer color counts are multiples of 3 by design, so finishBuild never
   // trims back-layer cells and the model has no hidden holes.
   buildSmiley() {
@@ -751,10 +753,11 @@ const Level = {
       for (let gx = 0; gx < rows[row].length; gx++) {
         const color = colorMap[rows[row][gx]];
         if (!color) continue;
-        for (let z = 0; z <= 1; z++) {
-          const hp = z === 0 ? (color === 'brown' ? 3 : color === 'red' ? 2 : 1) : 1;
-          cells.push({ gx, gy, z, color, hp });
-        }
+        let lock = null;
+        if (color === 'brown' && row <= 3) lock = gx < 5 ? 'eyeL' : 'eyeR'; // eyes (nose stays free)
+        else if (color === 'red') lock = 'mouth';
+        for (let z = 0; z <= 1; z++)
+          cells.push(lock ? { gx, gy, z, color, lock } : { gx, gy, z, color });
       }
     }
     return this.finishBuild(cells, 5);
@@ -939,6 +942,7 @@ const Entities = {
         x: p.x, y: p.y, z: c.z, color: c.color, alive: true, dying: false, scale: 1,
         hp: c.hp || 1, maxHp: c.hp || 1, hitFlash: 0,
         iced: !!c.ice, iceAlpha: c.ice ? 1 : 0, iceFlash: 0,
+        lockGroup: c.lock || null, locked: !!c.lock,
       });
     }
     this.remaining = this.totalVoxels = this.voxels.length;
@@ -1000,10 +1004,15 @@ const Entities = {
     }
     hits.sort((a, b) => a.d - b.d || b.depth - a.depth);
     const n = Math.min(hits.length, Tuning.MAX_BLAST_VOXELS);
-    let armored = 0, iceBlocked = 0;
+    let armored = 0, iceBlocked = 0, lockBlocked = 0;
     for (let i = 0; i < n; i++) {
       const v = hits[i].v;
-      if (v.iced) {
+      if (v.locked) {
+        // Locked voxels are true blockers: shots have no effect until the
+        // matching key box is filled and its key unlocks the group.
+        v.hitFlash = 1;
+        lockBlocked++;
+      } else if (v.iced) {
         // Frozen voxels are true blockers: cannon shots cannot reach the piece
         // underneath until the Level 3 flamethrower melts the ice.
         v.iceFlash = 1;
@@ -1020,7 +1029,7 @@ const Entities = {
         this.hitVoxel(v);
       }
     }
-    if (armored > 0) SFX.armorHit();
+    if (armored > 0 || lockBlocked > 0) SFX.armorHit();
     if (iceBlocked > 0) SFX.iceHit();
     return n;
   },
@@ -1250,6 +1259,65 @@ const IceBlocker = {
     if (this.t >= 1.48) {
       this.flame = 0;
       this.finished = true;
+    }
+  },
+};
+
+/* =====================================================================
+   11C LOCK + KEY (Level 2) — locked voxel groups opened by key boxes.
+   Filling a key box sends a key flying up to the next locked group and
+   unlocks it; until then shots on locked voxels have no effect (see blastAt).
+   ===================================================================== */
+const Locks = {
+  queue: [],    // groups not yet unlocked, opened in this order
+  flights: [],  // {t, dur, sx, sy, group}
+  reset() {
+    this.flights.length = 0;
+    this.queue = ['eyeL', 'eyeR', 'mouth']
+      .filter(g => Entities.voxels.some(v => v.lockGroup === g && v.locked));
+  },
+  get active() { return this.queue.length > 0 || this.flights.length > 0; },
+  launch(box) {
+    const group = this.queue.shift();
+    if (!group) return;
+    this.flights.push({ t: 0, dur: 0.85, sx: box.x, sy: box.y + 0.25, group });
+    SFX.whip();
+  },
+  groupCenter(group) {
+    let n = 0, x = 0, y = 0;
+    for (const v of Entities.voxels) {
+      if (v.lockGroup !== group || !v.alive) continue;
+      const p = Object3D.center(v);
+      x += p.x; y += p.y; n++;
+    }
+    return n ? { x: x / n, y: y / n } : { x: 0, y: Object3D.pivotY };
+  },
+  // key position along its arc; group center is re-read every frame so the
+  // key homes in even while the object is being rotated
+  pos(f) {
+    const k = Ease.outQuad(Math.min(1, f.t / f.dur));
+    const c = this.groupCenter(f.group);
+    return { x: f.sx + (c.x - f.sx) * k, y: f.sy + (c.y - f.sy) * k + Math.sin(Math.PI * k) * 0.9, k };
+  },
+  update(dt) {
+    for (let i = this.flights.length - 1; i >= 0; i--) {
+      const f = this.flights[i];
+      f.t += dt;
+      if (f.t >= f.dur) {
+        for (const v of Entities.voxels) {
+          if (v.lockGroup === f.group && v.locked) {
+            v.locked = false;
+            v.hitFlash = 1;
+            const p = Object3D.center(v);
+            Particles.dust(p.x, p.y);
+          }
+        }
+        const c = this.groupCenter(f.group);
+        Particles.ring(c.x, c.y, '#ffd34d', 0.6);
+        SFX.melt();
+        Haptics.buzz(20);
+        this.flights.splice(i, 1);
+      }
     }
   },
 };
@@ -1514,6 +1582,22 @@ const Boxes = {
       }
       if (trigger) trigger.flameTrigger = true;
     }
+
+    // Lock & key: one key box per locked group. Keys are YELLOW boxes because
+    // brown/red marbles only come from the locked blocks themselves — a
+    // brown/red key box could never be filled. Keys are placed as close to the
+    // front row as possible (spread across columns) so unlocking starts early.
+    const lockGroups = new Set(Entities.voxels.filter(v => v.locked).map(v => v.lockGroup)).size;
+    if (lockGroups > 0) {
+      let assigned = 0;
+      for (let row = 0; assigned < lockGroups && row < 20; row++) {
+        for (const column of this.columns) {
+          if (assigned >= lockGroups) break;
+          const b = column[row];
+          if (b && b.color === 'yellow' && !b.isKey) { b.isKey = true; assigned++; }
+        }
+      }
+    }
   },
 
   boxPosition(col, row) {
@@ -1550,6 +1634,7 @@ const Boxes = {
       box.clearing = true;
       const b = box;
       const flameSequence = !!box.flameTrigger && IceBlocker.trigger(box);
+      if (box.isKey) Locks.launch(box); // filled key box: fly the key to its lock group
       const beginClear = () => {
         // anticipation -> punch -> clear
         Tween.add({
@@ -1697,6 +1782,7 @@ const Game = {
     Boxes.init(counts);
     this.totalBoxesAtStart = Boxes.totalBoxes;
     IceBlocker.reset();
+    Locks.reset();
     Conveyor.reset();
     Cannon.reset();
     Cam.trauma = 0;
@@ -2075,6 +2161,7 @@ const Render = {
         ctx.strokeStyle=`rgba(232,252,255,${v.iceAlpha*.9})`;ctx.lineWidth=1.3;ctx.stroke();
         if(v.iceFlash>.02){ctx.fillStyle=`rgba(255,255,255,${v.iceFlash*.35})`;ctx.fill();}
       }
+      if(v.locked){ctx.fillStyle='rgba(48,46,64,.35)';ctx.fill();} // locked: darkened, inert
       if(v.hitFlash>.02){ctx.fillStyle=`rgba(255,255,255,${v.hitFlash*.45})`;ctx.fill();}
     }
     // HP badges. A badge is hidden only when a nearer cube sits almost exactly
@@ -2084,19 +2171,25 @@ const Render = {
     const occupied=[], badges=[];
     for(const v of Entities.voxels.filter(v=>v.alive&&!v.dying).sort((a,b)=>Object3D.center(b).depth-Object3D.center(a).depth)) {
       const p=Object3D.center(v), x=Cam.wx(p.x), y=Cam.wy(p.y);
-      if(v.hp>1
+      if((v.hp>1||v.locked)
         && !occupied.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.11)
         && !badges.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.22))
-        badges.push({x,y,hp:v.hp});
+        badges.push({x,y,hp:v.hp,locked:v.locked});
       occupied.push({x,y});
       v.hitFlash*=.86;
       v.iceFlash*=.84;
     }
     for(const b of badges) {
       ctx.fillStyle='rgba(255,255,255,.9)';ctx.beginPath();ctx.arc(b.x,b.y,Cam.S*.105,0,Math.PI*2);ctx.fill();
-      ctx.fillStyle='#c2246c';
-      ctx.font=`700 ${Cam.S*.15}px Fredoka,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
-      ctx.fillText(b.hp,b.x,b.y);
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      if(b.locked) {
+        ctx.font=`${Cam.S*.125}px sans-serif`;
+        ctx.fillText('🔒',b.x,b.y+Cam.S*.008);
+      } else {
+        ctx.fillStyle='#c2246c';
+        ctx.font=`700 ${Cam.S*.15}px Fredoka,sans-serif`;
+        ctx.fillText(b.hp,b.x,b.y);
+      }
     }
   },
 
@@ -2314,6 +2407,17 @@ const Render = {
           ctx.fill();
         }
 
+        // Key box cue: a small key badge on the front wall of the box.
+        if (box.isKey && !box.clearing) {
+          ctx.fillStyle = 'rgba(255,255,255,.92)';
+          ctx.beginPath();
+          ctx.arc(w * 0.30, frontTop + frontH * 0.30, 0.085 * S * sc, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.font = `${0.11 * S * sc}px sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('🔑', w * 0.30, frontTop + frontH * 0.30 + 0.008 * S * sc);
+        }
+
         // Flamethrower hatch cue: a small metal/orange module under the trigger box.
         if (isFront && box.flameTrigger && !IceBlocker.melted) {
           const mw = w * 0.34, mh = h * 0.17;
@@ -2326,6 +2430,23 @@ const Render = {
         }
         ctx.restore();
       }
+    }
+  },
+
+  drawKeys() {
+    for (const f of Locks.flights) {
+      const p = Locks.pos(f);
+      const x = Cam.wx(p.x), y = Cam.wy(p.y);
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(Math.sin(p.k * Math.PI * 2) * 0.25);
+      const s = 1 + 0.35 * Math.sin(p.k * Math.PI); // slight pop mid-flight
+      ctx.font = `${Cam.S * 0.30 * s}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.shadowColor = 'rgba(255,210,80,.9)';
+      ctx.shadowBlur = 14;
+      ctx.fillText('🔑', 0, 0);
+      ctx.restore();
     }
   },
 
@@ -2584,6 +2705,7 @@ const Render = {
     }
     this.drawBoxes();
     this.drawIceBlocker();
+    this.drawKeys();
     // jumping marbles pass in front of boxes
     for (const m of Entities.marbles) if (m.state === 'jumping') this.drawMarble(m);
     this.drawCannonballs();
@@ -2646,6 +2768,7 @@ function step(dt) {
     Conveyor.update(dt);
     Boxes.update(dt);
     IceBlocker.update(dt);
+    Locks.update(dt);
     Game.update(dt);
     // Progress advances only when a 3-marble box is completed.
   }
