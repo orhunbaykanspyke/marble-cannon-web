@@ -878,14 +878,22 @@ const LEVELS = [
    11 ENTITIES — voxels, cannonballs, marbles
    ===================================================================== */
 const Object3D = {
-  angle: 0.32,
+  angle: 0,   // yaw (drag left/right)
+  angleX: 0,  // pitch (drag up/down) — both unlimited, around the same pivot
   scale: 1.00,
   pivotY: 8.5,
   project(x, y, z) {
-    const c = Math.cos(this.angle), s = Math.sin(this.angle);
-    const depth = -x * s + z * c;
-    return {x: (x * c + z * s) * this.scale,
-      y: this.pivotY + (y - this.pivotY + depth * .20) * this.scale,
+    const cy = Math.cos(this.angle), sy = Math.sin(this.angle);
+    const cx = Math.cos(this.angleX), sx = Math.sin(this.angleX);
+    // yaw around the vertical pivot axis...
+    const px = x * cy + z * sy;
+    const pz = -x * sy + z * cy;
+    // ...then pitch around the horizontal axis through pivotY
+    const ry = y - this.pivotY;
+    const py = ry * cx - pz * sx;
+    const depth = ry * sx + pz * cx;
+    return {x: px * this.scale,
+      y: this.pivotY + (py + depth * .20) * this.scale,
       depth: depth * this.scale};
   },
   center(v) { return this.project(v.x, v.y, (.5 - v.z) * Tuning.VOXEL_SIZE); },
@@ -900,8 +908,11 @@ const Object3D = {
     });
   },
   update(dt) {
-    // No auto-rotation: the object only turns while the player holds and
-    // drags it (see Input). It keeps its last angle when released.
+    // Idle spin: the object slowly yaws on its own, but freezes while the
+    // player holds it (drag-rotate, see Input) and while a shot is in flight.
+    // The player-set pitch (angleX) is left untouched.
+    if (Game.state === 'playing' && !Cannon.inFlight && !REDUCED.on && !Input.drag)
+      this.angle = (this.angle + dt * .30) % (Math.PI * 2);
   },
 };
 
@@ -915,6 +926,7 @@ const Entities = {
 
   reset(cells) {
     Object3D.angle = 0; // level opens front-facing; player rotates manually
+    Object3D.angleX = 0;
     Object3D.scale = Level.objectScale || 1;
     const ys = cells.map(c => Level.voxelPos(c).y);
     Object3D.pivotY = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 8.5;
@@ -978,8 +990,9 @@ const Entities = {
       if (!v.alive || v.dying) continue;
       const p = Object3D.center(v);
       const extentX = half * (Math.abs(Math.cos(Object3D.angle)) + Math.abs(Math.sin(Object3D.angle)));
+      const extentY = half * (Math.abs(Math.cos(Object3D.angleX)) + Math.abs(Math.sin(Object3D.angleX)));
       const dx = Math.max(Math.abs(bx - p.x) - extentX, 0);
-      const dy = Math.max(Math.abs(by - p.y) - half * 1.2, 0);
+      const dy = Math.max(Math.abs(by - p.y) - extentY * 1.2, 0);
       if (dx * dx + dy * dy < Tuning.BLAST_RADIUS * Tuning.BLAST_RADIUS) {
         const cx = bx - p.x, cy = by - p.y;
         hits.push({ v, d: cx * cx + cy * cy, depth:p.depth });
@@ -1874,7 +1887,7 @@ const Input = {
         // On the object: wait to see whether this press becomes a rotate-drag.
         // A quick tap (released without moving) still shoots on pointerup.
         this.drag = { mode: 'pending', startClientX: e.clientX, startClientY: e.clientY,
-                      angle0: Object3D.angle, wx: w.x, wy: w.y };
+                      angle0: Object3D.angle, angleX0: Object3D.angleX, wx: w.x, wy: w.y };
       } else {
         Cannon.tryShoot(w.x, w.y);
       }
@@ -1888,7 +1901,8 @@ const Input = {
         const dy = e.clientY - this.drag.startClientY;
         if (this.drag.mode === 'pending' && Math.hypot(dx, dy) > 9) this.drag.mode = 'rotate';
         if (this.drag.mode === 'rotate') {
-          Object3D.angle = this.drag.angle0 + dx * 0.011; // horizontal drag spins the object
+          Object3D.angle = this.drag.angle0 + dx * 0.011;   // horizontal drag: yaw
+          Object3D.angleX = this.drag.angleX0 + dy * 0.011; // vertical drag: pitch (unlimited)
           return; // don't re-aim the cannon while spinning
         }
       }
@@ -2033,8 +2047,12 @@ const Render = {
       if((right-left)*(bottom-top)<.3)continue;
       this.softFace(screen);
       const [nx,ny,nz]=[[0,0,-1],[0,0,1],[-1,0,0],[1,0,0],[0,1,0],[0,-1,0]][side];
+      // rotate the face normal through yaw then pitch so shading tracks both axes
       const c=Math.cos(Object3D.angle),s=Math.sin(Object3D.angle);
-      const light=(nx*c+nz*s)*-.4+ny*.65+(-nx*s+nz*c)*.64;
+      const cx2=Math.cos(Object3D.angleX),sx2=Math.sin(Object3D.angleX);
+      const rnx=nx*c+nz*s, rnz1=-nx*s+nz*c;
+      const rny=ny*cx2-rnz1*sx2, rnz=ny*sx2+rnz1*cx2;
+      const light=rnx*-.4+rny*.65+rnz*.64;
       const [hue,sat,lum]=hexToHsl(pal.base);
       const variation=Math.sin(v.x*43.7+v.y*19.3+v.z*7.1)*.65;
       const faceLum=Math.max(14,Math.min(88,lum+light*13-6+variation));
