@@ -221,7 +221,7 @@ body{
     <div id="splash">
       <div id="splash-logo">🐤</div>
       <h1>MARBLE SMASH</h1>
-      <p>Blast the voxel target! Marbles ride the rail and sort into matching boxes. Clear every box to win — don't overflow the rail!</p>
+      <p>Blast the voxel target! Hold &amp; drag the target to spin it. Marbles ride the rail and sort into matching boxes. Clear every box to win — don't overflow the rail!</p>
       <div id="tap-hint">TAP TO PLAY</div>
     </div>
   </div>
@@ -900,8 +900,8 @@ const Object3D = {
     });
   },
   update(dt) {
-    // Pause while a shot flies so the chosen surface does not move away.
-    if (Game.state === 'playing' && !Cannon.inFlight && !REDUCED.on) this.angle = (this.angle + dt * .30) % (Math.PI*2);
+    // No auto-rotation: the object only turns while the player holds and
+    // drags it (see Input). It keeps its last angle when released.
   },
 };
 
@@ -914,7 +914,7 @@ const Entities = {
   totalVoxels: 0,
 
   reset(cells) {
-    Object3D.angle = .32;
+    Object3D.angle = 0; // level opens front-facing; player rotates manually
     Object3D.scale = Level.objectScale || 1;
     const ys = cells.map(c => Level.voxelPos(c).y);
     Object3D.pivotY = ys.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 8.5;
@@ -1836,6 +1836,21 @@ const HUD = {
    ===================================================================== */
 const Input = {
   aimX: 0, aimY: 6, aimAge: 99, pointerDown: false,
+  drag: null, // {mode:'pending'|'rotate', startClientX, startClientY, angle0, wx, wy}
+  // True when the world point is inside the live model's bounding box (with a
+  // small margin) — presses here may become a rotate-drag instead of a shot.
+  overObject(w) {
+    let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+    for (const v of Entities.voxels) {
+      if (!v.alive) continue;
+      const p = Object3D.center(v);
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }
+    if (minX > maxX) return false;
+    const m = 0.3;
+    return w.x > minX - m && w.x < maxX + m && w.y > minY - m && w.y < maxY + m;
+  },
   init() {
     const game = document.getElementById('game');
     const splash = document.getElementById('splash');
@@ -1855,15 +1870,38 @@ const Input = {
       this.aimX = w.x; this.aimY = w.y; this.aimAge = 0;
       this.pointerDown = true;
       Cannon.aim(w.x, w.y);
-      Cannon.tryShoot(w.x, w.y);
+      if (Game.state === 'playing' && this.overObject(w)) {
+        // On the object: wait to see whether this press becomes a rotate-drag.
+        // A quick tap (released without moving) still shoots on pointerup.
+        this.drag = { mode: 'pending', startClientX: e.clientX, startClientY: e.clientY,
+                      angle0: Object3D.angle, wx: w.x, wy: w.y };
+      } else {
+        Cannon.tryShoot(w.x, w.y);
+      }
     });
     game.addEventListener('pointermove', e => {
       const r = game.getBoundingClientRect();
       const w = Cam.toWorld(e.clientX - r.left, e.clientY - r.top);
       this.aimX = w.x; this.aimY = w.y; this.aimAge = 0;
+      if (this.drag && this.pointerDown) {
+        const dx = e.clientX - this.drag.startClientX;
+        const dy = e.clientY - this.drag.startClientY;
+        if (this.drag.mode === 'pending' && Math.hypot(dx, dy) > 9) this.drag.mode = 'rotate';
+        if (this.drag.mode === 'rotate') {
+          Object3D.angle = this.drag.angle0 + dx * 0.011; // horizontal drag spins the object
+          return; // don't re-aim the cannon while spinning
+        }
+      }
       if (Game.state === 'playing') Cannon.aim(w.x, w.y);
     });
-    const up = () => { this.pointerDown = false; };
+    const up = () => {
+      this.pointerDown = false;
+      if (this.drag) {
+        // Released without dragging: it was a tap on the object — shoot there.
+        if (this.drag.mode === 'pending' && Game.state === 'playing') Cannon.tryShoot(this.drag.wx, this.drag.wy);
+        this.drag = null;
+      }
+    };
     game.addEventListener('pointerup', up);
     game.addEventListener('pointercancel', up);
     game.addEventListener('contextmenu', e => e.preventDefault());
