@@ -1628,8 +1628,7 @@ const Cannon = {
   tryShoot(wx, wy) {
     if (Game.state !== 'playing') return;
     if (Conveyor.dangerActive) {
-      SFX.dryFire();
-      HUD.toast('CONVEYOR FULL — WAIT FOR A MATCH!');
+      SFX.dryFire(); // shot blocked while the rail is full — sound only, no toast
       return;
     }
     if (this.ammo <= 0) {
