@@ -726,23 +726,23 @@ const FloatText = (() => {
 const Level = {
   // Every builder returns { cells:[{gx,gy,z,color,hp?}], counts:{color:n} }.
 
-  // Level 2: smiley face — yellow head, brown eyes, red smile. The eyes and
-  // mouth are armored blockers (hp 3 / hp 2): the cube shows its remaining
+  // Level 2: smiley face — yellow head, brown eyes + nose, red smile. The eyes
+  // and mouth are armored blockers (hp 3 / hp 2): the cube shows its remaining
   // hit count and each cannonball tick decrements it.
+  // Per-layer color counts are multiples of 3 by design, so finishBuild never
+  // trims back-layer cells and the model has no hidden holes.
   buildSmiley() {
     const cells = [];
     const rows = [
-      '...YYYYY...',
       '..YYYYYYY..',
       '.YYYYYYYYY.',
       'YYBBYYYBBYY',
       'YYBBYYYBBYY',
-      'YYYYYYYYYYY',
+      'YYYYYBYYYYY',
       'YRYYYYYYYRY',
       'YYRYYYYYRYY',
       '.YYRRRRRYY.',
       '..YYYYYYY..',
-      '...YYYYY...',
     ];
     const colorMap = { Y: 'yellow', B: 'brown', R: 'red' };
     const maxGy = rows.length - 1;
@@ -760,71 +760,42 @@ const Level = {
     return this.finishBuild(cells, 5);
   },
 
-  // Level 3: voxel object projected from the supplied 10x15x16 JSON volume.
-  // StartRotation Y=90 means the gameplay-facing silhouette is the original Z x Y face.
-  // W=White, R=Red, Y=Yellow. The visible pattern is preserved cell-for-cell.
-  buildJsonObject() {
+  // Level 3: gift box — pink bow + ribbon band over a teal lid and festive
+  // purple/yellow stripes. Per-layer color counts are multiples of 3 by design,
+  // so finishBuild never trims back-layer cells.
+  buildGift() {
     const cells = [];
     const rows = [
-      '......WWWW......',
-      '....WWWWWWWW....',
-      '...WWWWWWWWWW...',
-      '..WWWWWWWWWWWW..',
-      '.WWWRRWWWWRRWWW.',
-      '.WWRRRRWWRRRRWW.',
-      'WWWRWWRWWRWWRWWW',
-      'WWWWWWWWWWWWWWWW',
-      'WWWRWWWWWWWWRWWW',
-      'WWWRRYYYYYYRRWWW',
-      '.WWWRRRRRRRRWWW.',
-      '.WWWWRYYYYRWWWW.',
-      '..WWWWYYYYWWWW..',
-      '...WWWWWWWWWW...',
-      '.....WWWWWW.....'
+      '.PP...PP.',
+      '..PPPPP..',
+      'TTTTTTTTT',
+      'TTTTTTTTT',
+      'PPPPPPPPP',
+      'VVVVVVVVV',
+      'YYYYYYYYY',
+      'VVVVVVVVV',
+      'YYYYYYYYY',
     ];
-    const colorMap = { W: 'white', R: 'red', Y: 'yellow' };
+    const colorMap = { P: 'pink', T: 'teal', V: 'purple', Y: 'yellow' };
     const maxGy = rows.length - 1;
-
-    // Exact gameplay-facing JSON surface, now two voxels deep. The full second
-    // layer makes the object one complete voxel layer thicker without changing
-    // the front silhouette.
     for (let row = 0; row < rows.length; row++) {
       const gy = maxGy - row;
       for (let gx = 0; gx < rows[row].length; gx++) {
         const color = colorMap[rows[row][gx]];
         if (!color) continue;
-        cells.push({ gx, gy, z: 0, color });
-        cells.push({ gx, gy, z: 1, color });
+        for (let z = 0; z <= 1; z++) cells.push({ gx, gy, z, color });
       }
     }
-
-    // Box capacity is 3. If doubling the model leaves a color count off by 1/2,
-    // trim the excess from the hidden back layer (z=1) — same approach as
-    // finishBuild — so no balancing voxels float behind the model.
-    const byColor = {};
-    for (const c of cells) byColor[c.color] = (byColor[c.color] || 0) + 1;
-    for (const col of Object.keys(byColor)) {
-      let excess = byColor[col] % 3;
-      for (let i = 0; i < cells.length && excess > 0; i++) {
-        if (cells[i].color === col && cells[i].z === 1) { cells.splice(i, 1); i--; excess--; }
-      }
-    }
-
-    this.centerGX = 7.5;
-    this.objectScale = 0.72; // Level 3-only zoom-out so the 16x15 object fits on screen.
-    this.objectOffsetY = -0.70; // Center the large JSON object vertically in the gameplay target area.
-    const counts = {};
-    for (const c of cells) counts[c.color] = (counts[c.color] || 0) + 1;
-    for (const col of Object.keys(counts))
-      console.assert(counts[col] % 3 === 0, `solvability broken: ${col}=${counts[col]}`);
-    return { cells, counts };
+    return this.finishBuild(cells, 4);
   },
 
-  // Level 1: chick — bright yellow body, orange beak/feet, brown eyes and cream belly.
-  // Pure visual level: gameplay loop stays identical to the other levels.
+  // Level 1: chick — bright yellow body, brown head tuft + eyes, orange
+  // beak/feet and a cream belly. Per-layer color counts are multiples of 3 by
+  // design, so finishBuild never trims back-layer cells.
   buildChick() {
     const cells = [];
     const rows = [
+      '.....B.....',
       '....YYY....',
       '...YYYYY...',
       '..YYYYYYY..',
@@ -832,10 +803,10 @@ const Level = {
       '.YYBYYYBYY.',
       '.YYYYOYYYY.',
       'YYYYYYYYYYY',
-      'YYYCCCCCYYY',
-      '.YYCCCCCYY.',
+      'YYYYCCCYYYY',
+      '.YYYCCCYYY.',
       '..YYYYYYY..',
-      '...OO.OO...',
+      '...OOYOO...',
       '..OO...OO..',
     ];
     const colorMap = { Y: 'yellow', O: 'orange', B: 'brown', C: 'cream' };
@@ -848,7 +819,12 @@ const Level = {
         for (let z = 0; z <= 1; z++) cells.push({ gx, gy, z, color });
       }
     }
-    return this.finishBuild(cells, 5);
+    const built = this.finishBuild(cells, 5);
+    // 13 rows tall with the tuft — shrink and shift a touch so the rotating
+    // model stays clear of the HUD bar.
+    this.objectScale = 0.94;
+    this.objectOffsetY = -0.40;
+    return built;
   },
 
   // shared: trim z==1 per color to multiples of 3 (solvability), count colors
@@ -895,7 +871,7 @@ const Level = {
 const LEVELS = [
   { name: 1, ammo: 60, build: () => Level.buildChick() },
   { name: 2, ammo: 70, build: () => Level.buildSmiley() },
-  { name: 3, ammo: 100, build: () => Level.buildJsonObject() },
+  { name: 3, ammo: 100, build: () => Level.buildGift() },
 ];
 
 /* =====================================================================
@@ -2018,24 +1994,16 @@ const Render = {
       const right=Math.max(...screen.map(p=>p.x)),bottom=Math.max(...screen.map(p=>p.y));
       if((right-left)*(bottom-top)<.3)continue;
       this.softFace(screen);
-      // Level 3 uses the exact same Palette[color].base as its matching box.
-      // No per-face lighting is applied here: hue, saturation and brightness stay
-      // identical on every voxel face. 3D readability comes only from the seams.
       const [nx,ny,nz]=[[0,0,-1],[0,0,1],[-1,0,0],[1,0,0],[0,1,0],[0,-1,0]][side];
       const c=Math.cos(Object3D.angle),s=Math.sin(Object3D.angle);
       const light=(nx*c+nz*s)*-.4+ny*.65+(-nx*s+nz*c)*.64;
-      if (Game.levelIndex === 2) {
-        ctx.fillStyle=pal.base;ctx.fill();
-      } else {
-        // Other levels keep this project's original ceramic shading.
-        const [hue,sat,lum]=hexToHsl(pal.base);
-        const variation=Math.sin(v.x*43.7+v.y*19.3+v.z*7.1)*.65;
-        const faceLum=Math.max(14,Math.min(88,lum+light*13-6+variation));
-        const surface=ctx.createLinearGradient(left,top,right,bottom);
-        surface.addColorStop(0,hsl(hue,sat*.66,Math.min(90,faceLum+.6)));
-        surface.addColorStop(1,hsl(hue,sat*.66,Math.max(12,faceLum-.6)));
-        ctx.fillStyle=surface;ctx.fill();
-      }
+      const [hue,sat,lum]=hexToHsl(pal.base);
+      const variation=Math.sin(v.x*43.7+v.y*19.3+v.z*7.1)*.65;
+      const faceLum=Math.max(14,Math.min(88,lum+light*13-6+variation));
+      const surface=ctx.createLinearGradient(left,top,right,bottom);
+      surface.addColorStop(0,hsl(hue,sat*.66,Math.min(90,faceLum+.6)));
+      surface.addColorStop(1,hsl(hue,sat*.66,Math.max(12,faceLum-.6)));
+      ctx.fillStyle=surface;ctx.fill();
       // Fine contact seams, no bright borders or padded/inset frames.
       ctx.strokeStyle='rgba(34,32,37,.15)';
       ctx.lineWidth=Math.max(.4,Cam.S*.007);ctx.stroke();
@@ -2046,20 +2014,26 @@ const Render = {
       }
       if(v.hitFlash>.02){ctx.fillStyle=`rgba(255,255,255,${v.hitFlash*.45})`;ctx.fill();}
     }
-    // Draw readable badges only on the closest cube at each projected spot.
-    const marked=[];
+    // HP badges. A badge is hidden only when a nearer cube sits almost exactly
+    // in front of its cube (true occlusion, e.g. the model faces away) — not
+    // merely because a plain neighbor projects nearby while the model rotates.
+    // Badges still keep a minimum spacing among themselves for readability.
+    const occupied=[], badges=[];
     for(const v of Entities.voxels.filter(v=>v.alive&&!v.dying).sort((a,b)=>Object3D.center(b).depth-Object3D.center(a).depth)) {
       const p=Object3D.center(v), x=Cam.wx(p.x), y=Cam.wy(p.y);
-      if(marked.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.24))continue;
-      marked.push({x,y});
-      if(v.hp>1) {
-        ctx.fillStyle='rgba(255,255,255,.9)';ctx.beginPath();ctx.arc(x,y,Cam.S*.105,0,Math.PI*2);ctx.fill();
-        ctx.fillStyle='#c2246c';
-        ctx.font=`700 ${Cam.S*.15}px Fredoka,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
-        ctx.fillText(v.hp,x,y);
-      }
+      if(v.hp>1
+        && !occupied.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.11)
+        && !badges.some(q=>Math.hypot(q.x-x,q.y-y)<Cam.S*.22))
+        badges.push({x,y,hp:v.hp});
+      occupied.push({x,y});
       v.hitFlash*=.86;
       v.iceFlash*=.84;
+    }
+    for(const b of badges) {
+      ctx.fillStyle='rgba(255,255,255,.9)';ctx.beginPath();ctx.arc(b.x,b.y,Cam.S*.105,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#c2246c';
+      ctx.font=`700 ${Cam.S*.15}px Fredoka,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(b.hp,b.x,b.y);
     }
   },
 
