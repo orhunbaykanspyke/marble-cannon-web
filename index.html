@@ -1336,13 +1336,21 @@ const Conveyor = {
       }
     }
 
-    // Full rail gets a 2-second grace period. Balls keep circulating and may
-    // still save the run by finding a matching open box during this window.
+    // Full rail: only a true dead-end fails the run. While any queued marble
+    // still matches an open box it WILL dispatch once it circulates to the
+    // dispatch zone (a full loop takes ~5.4s), so hold the countdown instead
+    // of expiring before the rescue can physically arrive. The 2-second fail
+    // countdown only ticks while no queued marble can go anywhere.
     if (this.count >= CAPACITY) {
       this.beginDanger();
       if (this.dangerActive) {
-        this.dangerTimer = Math.max(0, this.dangerTimer - dt);
-        if (this.dangerTimer <= 0) Game.fail('Conveyor jammed — no matching box!');
+        const rescuable = this.slotBalls.some(b => b && Boxes.getOpenBox(b.color));
+        if (rescuable) {
+          this.dangerTimer = this.dangerDuration;
+        } else {
+          this.dangerTimer = Math.max(0, this.dangerTimer - dt);
+          if (this.dangerTimer <= 0) Game.fail('Conveyor jammed — no matching box!');
+        }
       }
     } else if (this.dangerActive) {
       // At least one marble dispatched, so the jam has been relieved.
