@@ -1396,12 +1396,12 @@ const Conveyor = {
       },
     });
     SFX.railLand();
-    // fairness feedback: warn as the rail approaches capacity
+    // fairness feedback: warn as the rail approaches capacity — subtle only
+    // (rail flash + sound + haptic); no center-screen toasts, they distract.
     if (this.count >= Tuning.RAIL_WARN_AT) {
       this.warnFlash = 0.6;
       SFX.railWarn((this.count - Tuning.RAIL_WARN_AT) / (CAPACITY - Tuning.RAIL_WARN_AT));
-      if (this.count === Tuning.RAIL_WARN_AT) HUD.toast('RAIL FILLING UP!');
-      if (this.count === CAPACITY - 1) { HUD.toast('RAIL ALMOST FULL!'); Haptics.buzz(30); }
+      if (this.count === CAPACITY - 1) Haptics.buzz(30);
     }
   },
 
